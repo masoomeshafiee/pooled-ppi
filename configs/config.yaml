@@ -1,0 +1,93 @@
+
+# ------------------------------
+# workflow config
+# ------------------------------
+workflow:
+  stage: prepare # options: prepare, process, all
+
+project:
+  name: rfa1_v0_2
+  output_dir: ./data/rfa1_v0_2_output
+
+# ----------------------------
+# 1. Pooling configs
+# ----------------------------
+
+mode: one_vs_all  # one_vs_all: one bait vs all preys; many pools, each with the same bait but different subsets of preys.
+                  # all_vs_all: all pairs of protein protein interactions.
+approach: probabilistic # probabilistic/randomized/deterministic
+
+input:
+  fasta_path: ./data/rfa1_v0.fasta
+  target_id: RFA1
+
+pooling:
+  max_pool_size: 4000 # in the futrue we will support genome-wide pooling.
+  n_replicates: 4 # if set to 1, each prey only appears in one pool. If set to 2, each prey appears in two pools, etc.
+                  # NOTE: for the deterministic approach, number of replicates should be set to 1.
+  seed: 42
+  max_protein_size: null
+  weighting: length
+  shuffle_ties: true
+
+# -----------------------------
+# 2. AlphaFold3 input preparation configs
+# -----------------------------
+
+alphafold3:
+  model_seeds: [1]
+  dialect: alphafoldserver
+  version: 1
+  use_structure_template: true
+  count: 1
+
+json_preparation_options:
+  overwrite: true
+
+
+# -----------------------------
+# 3. AlphaFold3 input validation configs
+# -----------------------------
+
+validation:
+  max_pool_size: 5000
+
+
+# -----------------------------------------------------------------
+# Manual work: run AlphaFold3 server or local installation with the prepared jsons
+# -----------------------------
+# after running the alphaFold3 predictions, you can use the following configs to extract scores and apply size correction.
+prediction:
+  predictions_dir: /Users/masoomeshafiee/Downloads/af3_result
+
+# -----------------------------
+# 4. AlphaFold3 score extraction configs
+# -----------------------------
+
+extraction_options:
+  use_top_ranked_only: true
+  include_self_pairs: false
+# -----------------------------
+# 5. Size correction configs
+# -----------------------------
+
+size_correction:
+  score_column: chain_pair_iptm
+
+  # Options:
+  # pooled_ppi_fixed = use pooled-ppi approximate coefficients
+  # fit_from_data = fit coefficients from your data
+  method: fit_from_data
+
+  root_to_use: 0.5
+  type_of_correction: subtract
+
+  # pooled-ppi approximate averages from mgen + yeast
+  fixed_intercept: 0.04
+  fixed_slope: 0.0044
+
+aggregation:
+  resolve_replicates: mean
+
+
+
