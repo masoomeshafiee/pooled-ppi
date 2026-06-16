@@ -3,7 +3,7 @@ import argparse
 import yaml
 from generate_pool import pooling
 from write_af3_jsons import json_builder
-from validate_af3_jsons import validate_jsons
+from validate_af3_jsons import validate_input
 from extract_af3_pair_scores import score_extractor
 from size_correction import size_corrector
 
@@ -29,7 +29,7 @@ def build_paths(config: dict) -> dict:
         "json_dir": project_dir / "alphafold3_jsons",
         "chain_mapping_tsv": project_dir / "pool_chain_mapping.tsv",
         "json_validation_summary_tsv": project_dir / "af3_json_validation_summary.tsv",
-        "predictions_dir": Path(config["prediction"]["predictions_dir"]),
+        "predictions_dir": Path(config["prediction"]["predictions_dir"]), # after running alfafold
         "pair_scores_raw_tsv": project_dir / "pair_scores_raw.tsv",
         "prediction_summary_tsv": project_dir / "prediction_summary.tsv",
         "corrected_observations_tsv": project_dir / "pair_scores_size_corrected_observations.tsv",
@@ -68,15 +68,15 @@ def inject_paths(config: dict, paths: dict) -> dict:
     }
 
     # Step 3: validation
-    config["json_validation_input"] = {
+    config["validation"]["json_validation_input"] = {
         "json_dir": str(paths["json_dir"]),
         "chain_mapping_tsv": str(paths["chain_mapping_tsv"]),
+        "max_pool_size": config["validation"]["max_pool_size"],
     }
 
-    config["json_validation_output"] = {
+    config["validation"]["json_validation_output"] = {
         "summary_tsv": str(paths["json_validation_summary_tsv"]),
     }
-
     # Step 4: extraction
     config["af3_result_input"] = {
         "predictions_dir": str(paths["predictions_dir"]),
@@ -122,7 +122,7 @@ def validate_stage_inputs(stage: str, config: dict, paths: dict) -> None:
 
 def print_prepare_summary(paths: dict) -> None:
     print("\nPrepare stage complete.")
-    print("Upload these JSON files to AlphaFold Server:")
+    print("Use these json files for the AF3:")
     print(paths["json_dir"])
     print("\nAfter downloading AF3 results, put them here:")
     print(paths["predictions_dir"])
@@ -157,7 +157,7 @@ def main() -> None:
     if stage == "prepare":
         pooling(config)
         json_builder(config)
-        validate_jsons(config)
+        validate_input(config)
         print_prepare_summary(paths)
 
     elif stage == "process":
