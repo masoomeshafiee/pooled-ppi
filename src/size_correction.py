@@ -263,7 +263,7 @@ def size_corrector(config: dict) -> None:
     corrected_aggregated_tsv = Path(
         config["size_correction_output"]["corrected_aggregated_tsv"]
     )
-    correction_model_tsv = Path(config["output"]["correction_model_tsv"])
+    correction_model_tsv = Path(config["size_correction_output"]["correction_model_tsv"])
 
     correction_cfg = config["size_correction"]
     aggregation_cfg = config["aggregation"]

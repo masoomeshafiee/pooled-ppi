@@ -23,11 +23,11 @@ def load_config(config_path: Path) -> dict:
 def load_chain_mapping(mapping_path: Path) -> pd.DataFrame:
     mapping = pd.read_csv(mapping_path, sep="\t")
 
-    required = {"pool_name","entity_index","pseudo_chain_id", "protein_id", "protein_length"}
-    missing = required - set(mapping.columns)
+    # required = {"pool_name","entity_index","pseudo_chain_id", "protein_id", "protein_length"}
+    # missing = required - set(mapping.columns)
 
-    if missing:
-        raise ValueError(f"Chain mapping is missing columns: {sorted(missing)}")
+    # if missing:
+    #     raise ValueError(f"Chain mapping is missing columns: {sorted(missing)}")
 
     return mapping
 
@@ -61,11 +61,18 @@ def infer_pool_name_from_summary_name(name: str) -> str:
     Handles names like:
     fold_pool_00001_summary_confidences.json
     some/folder/fold_pool_00001_summary_confidences.json
+    some/folder/pool_00001_seed-1_sample-3_summary_confidences.json
     """
     stem = Path(name).name
 
-    ste_without_fold = stem.replace("fold_", "")
-    pool_name = re.sub(r"_summary_confidences_.*\.json$", "", ste_without_fold)
+    #ste_without_fold = stem.replace("fold_", "")
+    #pool_name = re.sub(r"_summary_confidences_.*\.json$", "", ste_without_fold)
+    # pool name is the first part of the filename that matches "pool_XXXXX" or "fold_pool_XXXXX"
+    match = re.search(r"(fold_)?pool_\d+", stem)
+    if not match:
+        raise ValueError(f"Could not infer pool name from summary JSON filename: {name}")
+
+    pool_name = match.group(0)
     
     return pool_name
 
@@ -112,6 +119,29 @@ def get_optional_matrix(summary: dict[str, Any], key: str) -> np.ndarray | None:
 
     return matrix
 
+def get_chain_ids_for_pool(pool_mapping: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Return chain IDs in the same order as the AF3 chain-pair matrices.
+
+    Supports both:
+    - AlphaFold Server mapping: pseudo_chain_id
+    - local/HPC AlphaFold3 mapping: chain_id
+    """
+    if "chain_id" in pool_mapping.columns:
+        pool_mapping = pool_mapping.sort_values("chain_id")
+        chain_ids = pool_mapping["chain_id"].astype(str).tolist()
+
+    elif "pseudo_chain_id" in pool_mapping.columns:
+        pool_mapping = pool_mapping.sort_values("pseudo_chain_id")
+        chain_ids = pool_mapping["pseudo_chain_id"].astype(str).tolist()
+
+    else:
+        raise ValueError(
+            "Chain mapping must contain either 'chain_id' for HPC AF3 "
+            "or 'pseudo_chain_id' for AlphaFold Server."
+        )
+
+    return pool_mapping, chain_ids
 
 def extract_pairs_from_summary(
     pool_name: str,
@@ -124,18 +154,15 @@ def extract_pairs_from_summary(
 
     if pool_mapping.empty:
         raise ValueError(f"No chain mapping found for pool_name={pool_name}")
+    
+    pool_mapping, chain_ids = get_chain_ids_for_pool(pool_mapping)
 
-    pool_mapping = pool_mapping.sort_values("pseudo_chain_id")
-
-    pseudo_chain_ids = pool_mapping["pseudo_chain_id"].astype(str).tolist()
-
-    #chain_ids = pool_mapping["chain_id"].astype(str).tolist()
     protein_ids = pool_mapping["protein_id"].astype(str).tolist()
     protein_lengths = pool_mapping["protein_length"].astype(int).tolist()
 
     iptm = get_chain_pair_matrix(summary)
 
-    n_chains = len(pseudo_chain_ids)
+    n_chains = len(chain_ids)
 
     if iptm.shape[0] != n_chains:
         raise ValueError(
@@ -172,8 +199,8 @@ def extract_pairs_from_summary(
             {
                 "pool_name": pool_name,
                 "source_file": source_file,
-                "chain_a": pseudo_chain_ids[i],
-                "chain_b": pseudo_chain_ids[j],
+                "chain_a": chain_ids[i],
+                "chain_b": chain_ids[j],
                 "protein_a": protein_a,
                 "protein_b": protein_b,
                 "protein_a_length": protein_lengths[i],
@@ -271,7 +298,7 @@ def score_extractor(config: dict) -> None:
     mapping_path = Path(config["af3_result_input"]["chain_mapping_tsv"])
 
     pair_scores_tsv = Path(config["af3_pair_scores_output"]["pair_scores_tsv"])
-    pool_summary_tsv = Path(config["af3_pool_summary_output"]["pool_summary_tsv"])
+    pool_summary_tsv = Path(config["af3_pair_scores_output"]["pool_summary_tsv"])
 
     include_self_pairs = bool(config["extraction_options"].get("include_self_pairs", False))
 
