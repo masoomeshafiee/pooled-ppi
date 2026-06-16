@@ -23,6 +23,22 @@ class Protein:
         return len(self.sequence)
 
 
+def get_json_build_paths(config: dict) -> tuple[Path, Path, Path]:
+    if "af3_json_build_input" in config and "af3_json_output" in config:
+        return (
+            Path(config["af3_json_build_input"]["fasta_path"]),
+            Path(config["af3_json_build_input"]["pools_tsv"]),
+            Path(config["af3_json_output"]["json_dir"]),
+        )
+
+    return (
+        Path(config["input"]["fasta_path"]),
+        Path(config["input"]["pools_tsv"]),
+        Path(config["output"]["json_dir"]),
+    )
+
+
+
 def extract_fasta_id(header: str) -> str:
     """
     Extract clean IDs from UniProt or simple FASTA headers.
@@ -192,6 +208,81 @@ def chunk_list(items: list, chunk_size: int) -> list[list]:
     return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
+# --------------------------------------
+# functions for AF3 to prepare input for AF3 (not server) - simpler, no structure templates, no count, chain IDs are A,B,C... instead of pseudo-chain IDs
+# ---------------------------------------
+
+def make_chain_ids(n: int) -> list[str]:
+    """
+    Generate AF3 entity IDs.
+
+    For now supports up to 26 chains: A-Z.
+    That is enough for pooled AF3 jobs with ~5000 aa total.
+    """
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    if n > len(alphabet):
+        raise ValueError(
+            f"This script currently supports up to {len(alphabet)} chains per pool. "
+            f"Requested {n}."
+        )
+
+    return list(alphabet[:n])
+
+
+
+
+def build_af3_json(
+    pool_name: str,
+    protein_ids: list[str],
+    proteins: dict[str, Protein],
+    model_seeds: list[int],
+    dialect: str,
+    version: int,
+) -> tuple[dict, list[dict]]:
+    chain_ids = make_chain_ids(len(protein_ids))
+
+    sequences = []
+    mapping_rows = []
+
+    for chain_id, protein_id in zip(chain_ids, protein_ids):
+        if protein_id not in proteins:
+            raise ValueError(
+                f"Protein ID '{protein_id}' from pools.tsv not found in FASTA."
+            )
+
+        protein = proteins[protein_id]
+
+        sequences.append(
+            {
+                "protein": {
+                    "id": chain_id,
+                    "sequence": protein.sequence,
+                }
+            }
+        )
+
+        mapping_rows.append(
+            {
+                "pool_name": pool_name,
+                "chain_id": chain_id,
+                "protein_id": protein_id,
+                "protein_length": protein.length,
+            }
+        )
+
+    af3_input = {
+        "name": pool_name,
+        "modelSeeds": model_seeds,
+        "sequences": sequences,
+        "dialect": dialect,
+        "version": version,
+    }
+
+    return af3_input, mapping_rows
+
+# --------------------------------------
+
 def write_json(path: Path, payload, overwrite: bool) -> None:
     if path.exists() and not overwrite:
         raise FileExistsError(f"File exists and overwrite=false: {path}")
@@ -205,12 +296,9 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(handle)
 
 
-def json_builder(config: dict) -> None:
+def json_builder_server(config: dict) -> None:
 
-
-    fasta_path = Path(config["af3_json_build_input"]["fasta_path"])
-    pools_tsv = Path(config["af3_json_build_input"]["pools_tsv"])
-    json_dir = Path(config["af3_json_output"]["json_dir"])
+    fasta_path, pools_tsv, json_dir = get_json_build_paths(config)
 
     server_cfg = config.get("alphafold3", {})
     options_cfg = config.get("json_preparation_options", {})
@@ -273,6 +361,70 @@ def json_builder(config: dict) -> None:
     print(f"Batch JSON files written: {len(batches)}")
     print(f"JSON directory: {json_dir}")
     print(f"Chain mapping written: {mapping_path}")
+
+
+def json_builder_hpc(config: dict) -> None:
+    fasta_path, pools_tsv, json_dir = get_json_build_paths(config)
+    overwrite = bool(config["json_preparation_options"].get("overwrite", True))
+
+
+
+    model_seeds = config["alphafold3"].get("model_seeds", [1])
+    server_cfg = config.get("alphafold3", {})
+    options_cfg = config.get("json_preparation_options", {})
+    dialect = config["alphafold3"].get("dialect", "alphafold3")
+    version = int(config["alphafold3"].get("version", 1))
+    
+
+    json_dir.mkdir(parents=True, exist_ok=True)
+
+    proteins = read_fasta(fasta_path)
+    pools_df = pd.read_csv(pools_tsv, sep="\t")
+
+    all_mapping_rows = []
+
+    for _, row in pools_df.iterrows():
+        pool_id = str(row["pool_id"])
+        protein_ids = parse_protein_ids_from_pool_row(row)
+
+        af3_input, mapping_rows = build_af3_json(
+            pool_name=pool_id,
+            protein_ids=protein_ids,
+            proteins=proteins,
+            model_seeds=model_seeds,
+            dialect=dialect,
+            version=version,
+        )
+
+        output_json = json_dir / f"{pool_id}.json"
+        write_json(output_json, af3_input, overwrite=overwrite)
+
+        all_mapping_rows.extend(mapping_rows)
+
+    mapping_df = pd.DataFrame(all_mapping_rows)
+    mapping_path = json_dir.parent / "pool_chain_mapping.tsv"
+    mapping_df.to_csv(mapping_path, sep="\t", index=False)
+
+    print("Done.")
+    print(f"Proteins loaded: {len(proteins)}")
+    print(f"Pools loaded: {len(pools_df)}")
+    print(f"JSON files written: {len(pools_df)}")
+    print(f"JSON directory: {json_dir}")
+    print(f"Chain mapping written: {mapping_path}")
+
+
+def json_builder(config: dict) -> None:
+    dialect = config["alphafold3"].get("dialect", "alphafold3")
+
+    if dialect == "alphafoldserver":
+        json_builder_server(config)
+    elif dialect == "alphafold3":
+        json_builder_hpc(config)
+    else:
+        raise ValueError(
+            f"Invalid dialect: {dialect}. Must be 'alphafoldserver' or 'alphafold3'."
+        )
+
 
 
 if __name__ == "__main__":
